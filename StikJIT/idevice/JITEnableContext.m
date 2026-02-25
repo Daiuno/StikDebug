@@ -70,7 +70,6 @@ static JITEnableContext* sharedJITContext = nil;
         va_start(args, format);
         NSString* fmt = [NSString stringWithCString:format encoding:NSASCIIStringEncoding];
         NSString* message = [[NSString alloc] initWithFormat:fmt arguments:args];
-        NSLog(@"%@", message);
 
         if ([message containsString:@"ERROR"] || [message containsString:@"Error"]) {
             [[LogManagerBridge shared] addErrorLog:message];
@@ -92,16 +91,9 @@ static JITEnableContext* sharedJITContext = nil;
 - (IdevicePairingFile*)getPairingFileWithError:(NSError**)error {
     NSFileManager* fm = [NSFileManager defaultManager];
     NSURL* docPathUrl = [fm URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
-    NSString* currentDeviceUUIDStr = [NSUserDefaults.standardUserDefaults stringForKey:@"DeviceLibraryActiveDeviceID"];
-    NSURL* pairingFileURL;
-    if(!currentDeviceUUIDStr || [currentDeviceUUIDStr isEqualToString:@"00000000-0000-0000-0000-000000000001"]) {
-        pairingFileURL = [docPathUrl URLByAppendingPathComponent:@"pairingFile.plist"];
-    } else {
-        pairingFileURL = [docPathUrl URLByAppendingPathComponent:[NSString stringWithFormat:@"DeviceLibrary/Pairings/%@.mobiledevicepairing", currentDeviceUUIDStr]];
-    }
+    NSURL* pairingFileURL = [docPathUrl URLByAppendingPathComponent:@"pairingFile.plist"];
 
     if (![fm fileExistsAtPath:pairingFileURL.path]) {
-        NSLog(@"Pairing file not found!");
         *error = [self errorWithStr:@"Pairing file not found!" code:-17];
         return nil;
     }
@@ -182,8 +174,6 @@ static JITEnableContext* sharedJITContext = nil;
     intptr_t isTimeout = dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, (uint64_t)(5 * NSEC_PER_SEC)));
     if(isTimeout) {
         Ccompletion(-1, "Heartbeat failed to complete in reasonable time.");
-    } else {
-        NSLog(@"Start heartbeat success %p", pthread_self());
     }
 
     os_unfair_lock_lock(&heartbeatLock);
@@ -202,34 +192,6 @@ static JITEnableContext* sharedJITContext = nil;
     }
     return YES;
 }
-
-- (BOOL)debugAppWithBundleID:(NSString*)bundleID logger:(LogFunc)logger jsCallback:(DebugAppCallback)jsCallback {
-    NSError* err = nil;
-    [self ensureHeartbeatWithError:&err];
-    if(err) {
-        logger(err.localizedDescription);
-        return NO;
-    }
-    
-    return debug_app(provider,
-                     [bundleID UTF8String],
-                     [self createCLogger:logger], jsCallback) == 0;
-}
-
-- (BOOL)debugAppWithPID:(int)pid logger:(LogFunc)logger jsCallback:(DebugAppCallback)jsCallback {
-    NSError* err = nil;
-    [self ensureHeartbeatWithError:&err];
-    if(err) {
-        logger(err.localizedDescription);
-        return NO;
-    }
-    
-    return debug_app_pid(provider,
-                     pid,
-                     [self createCLogger:logger], jsCallback) == 0;
-}
-
-
 
 
 

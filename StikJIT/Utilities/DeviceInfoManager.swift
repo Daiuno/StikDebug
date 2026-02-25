@@ -33,13 +33,14 @@ final class DeviceInfoManager: ObservableObject {
                 try JITEnableContext.shared.ensureHeartbeat()
             } catch {
                 await MainActor.run {
-                    self.error = ("Initialization Failed", self.initErrorMessage(Int32((error as NSError).code)))
+                    self.error = ("Initialization Failed", error.localizedDescription)
                     self.busy = false
                 }
+                return
             }
             do {
                 let lockdownHandle = LockdownClientSendable(raw: try JITEnableContext.shared.ideviceInfoInit())
-                
+
                 await MainActor.run {
                     self.lockdownHandle = lockdownHandle
                     self.initialized = true
@@ -47,7 +48,7 @@ final class DeviceInfoManager: ObservableObject {
                 }
             } catch {
                 await MainActor.run {
-                    self.error = ("Initialization Failed", self.initErrorMessage(Int32((error as NSError).code)))
+                    self.error = ("Initialization Failed", error.localizedDescription)
                     self.busy = false
                 }
             }
@@ -107,16 +108,6 @@ final class DeviceInfoManager: ObservableObject {
         initialized = false
     }
 
-    private func initErrorMessage(_ code: Int32) -> String {
-        switch code {
-        case 1: return "Couldn’t read pairingFile.plist"
-        case 2: return "Unable to create device provider"
-        case 3: return "Cannot connect to lockdown service"
-        case 4: return "Unable to start lockdown session"
-        default: return "Unknown init error (\(code))"
-        }
-    }
-
     nonisolated private static func convertToString(_ raw: Any) -> String {
         switch raw {
         case let s as String: return s
@@ -166,64 +157,80 @@ struct DeviceInfoView: View {
         }
     }
     
-    @AppStorage("appTheme") private var appThemeRaw: String = AppTheme.system.rawValue
-    @Environment(\.themeExpansionManager) private var themeExpansion
-    private var backgroundStyle: BackgroundStyle { themeExpansion?.backgroundStyle(for: appThemeRaw) ?? AppTheme.system.backgroundStyle }
-    private var preferredScheme: ColorScheme? { themeExpansion?.preferredColorScheme(for: appThemeRaw) }
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                ThemedBackground(style: backgroundStyle)
-                    .ignoresSafeArea()
-
-                ScrollView {
-                    VStack(spacing: 20) {
-                        infoCard
+            List {
+                if !isPaired {
+                    Section {
+                        Label("No pairing file detected", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Text("Import your device's pairing file to get started.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 30)
                 }
 
+                if !mgr.entries.isEmpty {
+                    Section {
+                        ForEach(filteredEntries, id: \.key) { entry in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(entry.key)
+                                    .font(.subheadline.weight(.semibold))
+                                Text(entry.value)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
+                            .padding(.vertical, 2)
+                            .contextMenu {
+                                Button { copyToPasteboard(entry.value) } label: {
+                                    Label("Copy Value", systemImage: "doc.on.doc")
+                                }
+                                Button { copyToPasteboard("\(entry.key): \(entry.value)") } label: {
+                                    Label("Copy Key & Value", systemImage: "doc.on.clipboard")
+                                }
+                            }
+                        }
+                    }
+                } else if !mgr.busy && isPaired {
+                    Section {
+                        Text("No info available").foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .searchable(
+                text: $searchText,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: "Search device info…"
+            )
+            .navigationTitle("Device Info")
+            .overlay {
                 if mgr.busy {
                     Color.black.opacity(0.35).ignoresSafeArea()
                     ProgressView("Fetching device info…")
                         .padding(16)
-                        .background(
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .fill(.ultraThinMaterial)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                        .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
-                                )
-                        )
-                        .shadow(color: .black.opacity(0.15), radius: 12, x: 0, y: 4)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
-
-                if alert {
-                    CustomErrorView(title: alertTitle,
-                                    message: alertMsg,
-                                    onDismiss: { alert = false },
-                                    messageType: alertSuccess ? .success : .error)
-                }
-
                 if justCopied {
                     VStack {
                         Spacer()
                         Text("Copied")
                             .font(.footnote.weight(.semibold))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
+                            .padding(.horizontal, 14).padding(.vertical, 10)
                             .background(.ultraThinMaterial, in: Capsule())
-                            .overlay(Capsule().strokeBorder(Color.white.opacity(0.15), lineWidth: 1))
-                            .shadow(color: .black.opacity(0.12), radius: 10, x: 0, y: 3)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                             .padding(.bottom, 30)
                     }
                     .animation(.easeInOut(duration: 0.25), value: justCopied)
                 }
             }
-            .navigationTitle("Device Info")
+            .alert(alertTitle, isPresented: $alert) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text(alertMsg)
+            }
             .toolbar {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     if isPaired {
@@ -281,64 +288,14 @@ struct DeviceInfoView: View {
             }
             .onAppear { if isPaired { mgr.initAndLoad() } }
             .onDisappear { mgr.cleanup() }
-        }
-        .preferredColorScheme(preferredScheme)
-    }
-
-    // MARK: - UI Sections
-
-    private var infoCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            TextField("Search device info…", text: $searchText)
-                .padding(12)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
-                )
-                .padding(.bottom, 10)
-
-            if !isPaired {
-                VStack(alignment: .leading, spacing: 6) {
-                    Label("No pairing file detected", systemImage: "exclamationmark.triangle.fill")
-                        .foregroundColor(.orange)
-                    Text("Import your device’s pairing file to get started.")
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.vertical, 6)
-            }
-
-            if mgr.entries.isEmpty {
-                Text(mgr.busy ? "Loading…" : (isPaired ? "No info available" : ""))
-                    .foregroundColor(.secondary)
-            } else {
-                ForEach(filteredEntries, id: \.key) { entry in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(entry.key).bold()
-                        Text(entry.value)
-                            .font(.caption.monospaced())
-                            .foregroundColor(.secondary)
-                            .textSelection(.enabled)
-                    }
-                    .padding(.vertical, 4)
-                    Divider()
-                        .background(Color.white.opacity(0.12))
+            .onChange(of: mgr.error?.message) { _ in
+                if let err = mgr.error {
+                    fail(err.title, err.message)
+                    mgr.error = nil
                 }
             }
         }
-        .padding(20)
-        .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
-                )
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .shadow(color: .black.opacity(0.15), radius: 12, x: 0, y: 4)
-    }
+            }
 
     // MARK: - Copy / Share helpers
 

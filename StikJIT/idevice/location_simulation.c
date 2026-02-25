@@ -1,11 +1,11 @@
 //
-//  ls.c
+//  location_simulation.c
 //  StikDebug
 //
 //  Created by Stephen on 8/3/25.
 //
 
-#include "ls.h"
+#include "location_simulation.h"
 #include "idevice.h"
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -36,7 +36,6 @@ int simulate_location(const char *device_ip,
                       double longitude,
                       const char *pairing_file)
 {
-    idevice_init_logger(Debug, Disabled, NULL);
     IdeviceFfiError *err = NULL;
     
     if (g_location_sim) {
@@ -98,17 +97,21 @@ int simulate_location(const char *device_ip,
         cleanup_on_error();
         return IPA_ERR_ADAPTER_CREATE;
     }
+    // core_device_proxy_create_tcp_adapter takes ownership of g_core_device
+    // (Rust moves it into the adapter). Null the pointer so cleanup_on_error
+    // does not attempt a second free.
+    g_core_device = NULL;
 
     AdapterStreamHandle *stream = NULL;
-    if ((err = adapter_connect(g_adapter, rsd_port, &stream))) {
+    if ((err = adapter_connect(g_adapter, rsd_port, (ReadWriteOpaque **)&stream))) {
         idevice_error_free(err);
         cleanup_on_error();
         return IPA_ERR_STREAM;
     }
 
-    if ((err = rsd_handshake_new(stream, &g_handshake))) {
+    if ((err = rsd_handshake_new((ReadWriteOpaque *)stream, &g_handshake))) {
         idevice_error_free(err);
-        adapter_close(stream);
+        adapter_stream_close(stream);
         cleanup_on_error();
         return IPA_ERR_HANDSHAKE;
     }
@@ -121,6 +124,9 @@ int simulate_location(const char *device_ip,
         cleanup_on_error();
         return IPA_ERR_REMOTE_SERVER;
     }
+    // remote_server_connect_rsd takes ownership of g_adapter and g_handshake.
+    g_adapter   = NULL;
+    g_handshake = NULL;
 
     if ((err = location_simulation_new(g_remote_server,
                                        &g_location_sim))) {
@@ -128,6 +134,8 @@ int simulate_location(const char *device_ip,
         cleanup_on_error();
         return IPA_ERR_LOCATION_SIM;
     }
+    // location_simulation_new takes ownership of g_remote_server.
+    g_remote_server = NULL;
 
     if ((err = location_simulation_set(g_location_sim,
                                        latitude,

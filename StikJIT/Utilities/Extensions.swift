@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 
 extension FileManager {
     func filePath(atPath path: String, withLength length: Int) -> String? {
-        guard let file = try? contentsOfDirectory(atPath: path).filter({ $0.count == length }).first else { return nil }
+        guard let file = try? contentsOfDirectory(atPath: path).first(where: { $0.count == length }) else { return nil }
         return "\(path)/\(file)"
     }
 }
@@ -23,7 +23,5 @@ extension UserDefaults {
     enum Keys {
         /// Forces the app to treat the current device as TXM-capable so scripts always run.
         static let txmOverride = "overrideTXMForScripts"
-        /// Tracks whether an external device profile is currently active.
-        static let usingExternalDevice = "UsingExternalDevice"
     }
 }

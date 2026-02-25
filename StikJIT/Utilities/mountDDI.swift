@@ -18,24 +18,31 @@ func progressCallback(progress: size_t, total: size_t, context: UnsafeMutableRaw
     MountingProgress.shared.progressCallback(progress: progress, total: total, context: context)
 }
 
+enum MountCheckResult {
+    case mounted
+    case notMounted
+    case unreachable
+}
+
 func isMounted() -> Bool {
+    return checkMountStatus() == .mounted
+}
+
+func checkMountStatus() -> MountCheckResult {
     do {
         let result = try JITEnableContext.shared.getMountedDeviceCount()
-        return result > 0
+        return result > 0 ? .mounted : .notMounted
     } catch {
-        print("Error while getMountedDeviceCount \(error)")
-        return false
+        return .unreachable
     }
 }
 
-func mountPersonalDDI(imagePath: String, trustcachePath: String, manifestPath: String) -> Int {
-    print("Mounting \(imagePath) \(trustcachePath) \(manifestPath)")
-    
+func mountPersonalDDI(imagePath: String, trustcachePath: String, manifestPath: String) -> String? {
     do {
         try JITEnableContext.shared.mountPersonalDDI(withImagePath: imagePath, trustcachePath: trustcachePath, manifestPath: manifestPath)
     } catch {
-        print("Failed to mount ddi: \(error)")
-        return (error as NSError).code
+        LogManager.shared.addErrorLog("Failed to mount DDI: \(error.localizedDescription)")
+        return error.localizedDescription
     }
-    return 0
+    return nil
 }

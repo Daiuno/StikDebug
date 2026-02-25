@@ -9,32 +9,22 @@ import SwiftUI
 
 struct ProcessInspectorView: View {
     @StateObject private var viewModel = ProcessInspectorViewModel()
-    @Environment(\.themeExpansionManager) private var themeExpansion
-    @AppStorage("appTheme") private var appThemeRaw: String = AppTheme.system.rawValue
     @State private var killCandidate: ProcessInfoEntry?
     @State private var killConfirmTask: Task<Void, Never>?
-    
-    private var backgroundStyle: BackgroundStyle {
-        themeExpansion?.backgroundStyle(for: appThemeRaw) ?? AppTheme.system.backgroundStyle
-    }
-    
-    
+
     var body: some View {
         NavigationStack {
-            ZStack {
-                ThemedBackground(style: backgroundStyle)
-                    .ignoresSafeArea()
-                content
-            }
-            .navigationTitle("Process Inspector")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: viewModel.refresh) {
-                        Label("Refresh", systemImage: "arrow.clockwise")
+            content
+                .navigationTitle("Process Inspector")
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button(action: viewModel.refresh) {
+                            Label("Refresh", systemImage: "arrow.clockwise")
+                        }
+                        .disabled(viewModel.isRefreshing)
                     }
-                    .disabled(viewModel.isRefreshing)
                 }
-            }
+                .searchable(text: $viewModel.searchText, placement: .navigationBarDrawer(displayMode: .always))
         }
         .task {
             await viewModel.startAutoRefresh()
@@ -42,104 +32,51 @@ struct ProcessInspectorView: View {
         .onDisappear {
             viewModel.stopAutoRefresh()
         }
-        .alert(item: $viewModel.killAlert) { info in
-            Alert(
-                title: Text(info.title),
-                message: Text(info.message),
-                dismissButton: .default(Text("OK"))
-            )
+        .alert(viewModel.killAlertTitle, isPresented: $viewModel.showKillAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(viewModel.killAlertMessage)
+        }
+        .alert(viewModel.errorAlertTitle, isPresented: $viewModel.showErrorAlert) {
+            Button("Try Again") { viewModel.refresh() }
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(viewModel.errorAlertMessage)
         }
     }
-    
+
     @ViewBuilder
     private var content: some View {
-        if let error = viewModel.errorMessage {
-            VStack(spacing: 16) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 36))
-                    .foregroundStyle(.orange)
-                Text(error)
-                    .multilineTextAlignment(.center)
-                    .foregroundColor(.primary)
-                Button("Try Again") {
-                    viewModel.refresh()
+        List {
+            Section("Overview") {
+                LabeledContent("Total Processes") {
+                    Text("\(viewModel.processes.count)")
+                        .font(.title2.bold())
                 }
-                .buttonStyle(.borderedProminent)
             }
-            .padding()
-        } else {
-            ScrollView {
-                VStack(spacing: 16) {
-                    statsCard
-                    processesCard
+            Section("Processes") {
+                if viewModel.filteredProcesses.isEmpty {
+                    Text("No matching processes.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(viewModel.filteredProcesses) { process in
+                        ProcessRow(
+                            process: process,
+                            isKilling: viewModel.killingPID == process.pid,
+                            isConfirming: killCandidate?.pid == process.pid,
+                            onKillTap: { handleKillTap(for: $0) }
+                        )
+                    }
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 20)
-                .padding(.bottom, 30)
             }
-            .refreshable {
-                viewModel.refresh()
-            }
-            .searchable(text: $viewModel.searchText, placement: .navigationBarDrawer(displayMode: .always))
         }
+        .listStyle(.insetGrouped)
+        .refreshable { viewModel.refresh() }
     }
 }
 
 private extension ProcessInspectorView {
-    var statsCard: some View {
-        MaterialCard {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Overview")
-                    .font(.headline)
-                    .foregroundColor(.primary)
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Total Processes")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Text("\(viewModel.processes.count)")
-                                .font(.title2.bold())
-                        }
-                        Spacer()
-                    }
-                }
-            }
-        }
-    }
-    
-    var processesCard: some View {
-        MaterialCard {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Processes")
-                    .font(.headline)
-                    .foregroundColor(.primary)
-                if viewModel.filteredProcesses.isEmpty {
-                    Text("No matching processes.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                } else {
-                    LazyVStack(spacing: 0) {
-                        ForEach(viewModel.filteredProcesses) { process in
-                            ProcessRow(
-                                process: process,
-                                isKilling: viewModel.killingPID == process.pid,
-                                isConfirming: killCandidate?.pid == process.pid,
-                                onKillTap: { handleKillTap(for: $0) }
-                            )
-                            .padding(.vertical, 6)
-                            
-                            if process.id != viewModel.filteredProcesses.last?.id {
-                                Divider()
-                                    .background(Color.white.opacity(0.1))
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
     func handleKillTap(for process: ProcessInfoEntry) {
         if killCandidate?.pid == process.pid {
             killConfirmTask?.cancel()
@@ -223,18 +160,16 @@ private struct ProcessRow: View {
 
 @MainActor
 final class ProcessInspectorViewModel: ObservableObject {
-    struct AlertInfo: Identifiable {
-        let id = UUID()
-        let title: String
-        let message: String
-    }
-    
     @Published private(set) var processes: [ProcessInfoEntry] = []
     @Published var searchText: String = ""
     @Published var isRefreshing = false
-    @Published var errorMessage: String?
+    @Published var showErrorAlert = false
+    @Published var errorAlertTitle = ""
+    @Published var errorAlertMessage = ""
     @Published private(set) var killingPID: Int?
-    @Published var killAlert: AlertInfo?
+    @Published var showKillAlert = false
+    @Published var killAlertTitle = ""
+    @Published var killAlertMessage = ""
     
     private var refreshTask: Task<Void, Never>?
     private var killTimeoutTask: Task<Void, Never>?
@@ -279,14 +214,15 @@ final class ProcessInspectorViewModel: ObservableObject {
     func refresh() {
         guard !isRefreshing else { return }
         isRefreshing = true
-        errorMessage = nil
         Task.detached(priority: .utility) { [weak self] in
             var err: NSError?
             let entries = FetchDeviceProcessList(&err) ?? []
             await MainActor.run {
                 guard let self else { return }
                 if let err {
-                    self.errorMessage = err.localizedDescription
+                    self.errorAlertTitle = "Failed to Load Processes"
+                    self.errorAlertMessage = err.localizedDescription
+                    self.showErrorAlert = true
                 } else {
                     self.processes = entries.compactMap { item -> ProcessInfoEntry? in
                         guard let dict = item as? NSDictionary else { return nil }
@@ -301,7 +237,9 @@ final class ProcessInspectorViewModel: ObservableObject {
     
     func kill(process: ProcessInfoEntry) {
         guard killingPID == nil else {
-            killAlert = AlertInfo(title: "Busy", message: "Already terminating PID \(killingPID!).")
+            killAlertTitle = "Busy"
+            killAlertMessage = "Already terminating PID \(killingPID!)."
+            showKillAlert = true
             return
         }
         let targetPID = process.pid
@@ -313,10 +251,9 @@ final class ProcessInspectorViewModel: ObservableObject {
                 guard let self else { return }
                 if self.killingPID == targetPID {
                     self.killingPID = nil
-                    self.killAlert = AlertInfo(
-                        title: "Kill Timed Out",
-                        message: "Could not confirm termination for PID \(targetPID). Try again."
-                    )
+                    self.killAlertTitle = "Kill Timed Out"
+                    self.killAlertMessage = "Could not confirm termination for PID \(targetPID). Try again."
+                    self.showKillAlert = true
                 }
             }
         }
@@ -330,16 +267,14 @@ final class ProcessInspectorViewModel: ObservableObject {
                 guard self.killingPID == targetPID else { return }
                 self.killingPID = nil
                 if success {
-                    self.killAlert = AlertInfo(
-                        title: "Process Terminated",
-                        message: "PID \(targetPID) was terminated."
-                    )
+                    self.killAlertTitle = "Process Terminated"
+                    self.killAlertMessage = "PID \(targetPID) was terminated."
+                    self.showKillAlert = true
                     self.refresh()
                 } else {
-                    self.killAlert = AlertInfo(
-                        title: "Kill Failed",
-                        message: err?.localizedDescription ?? "Unknown error"
-                    )
+                    self.killAlertTitle = "Kill Failed"
+                    self.killAlertMessage = err?.localizedDescription ?? "Unknown error"
+                    self.showKillAlert = true
                 }
             }
         }

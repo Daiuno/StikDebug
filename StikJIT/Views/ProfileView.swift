@@ -20,7 +20,8 @@ class Profile: ObservableObject {
     @Published var uuid: String
     @Published var expirationDate: Date? = nil
     @Published var plistDict: [String:Any]? = nil
-    
+    var decodeError: String? = nil
+
     init(data: Data) {
         self.data = data
         do {
@@ -38,8 +39,7 @@ class Profile: ObservableObject {
                 self.uuid = UUID().uuidString
             }
         } catch {
-            appName = "Failed to decode this profile."
-            appId = error.localizedDescription
+            self.decodeError = error.localizedDescription
             uuid = UUID().uuidString
         }
     }
@@ -132,52 +132,106 @@ struct ProfileView: View {
     @State private var removeTargetName: String = ""
     @State private var removeTargetUUID: String = ""
     
-    @AppStorage("customAccentColor") private var customAccentColorHex: String = ""
-    @AppStorage("appTheme") private var appThemeRaw: String = AppTheme.system.rawValue
-    @Environment(\.themeExpansionManager) private var themeExpansion
-    private var backgroundStyle: BackgroundStyle { themeExpansion?.backgroundStyle(for: appThemeRaw) ?? AppTheme.system.backgroundStyle }
-    private var preferredScheme: ColorScheme? { themeExpansion?.preferredColorScheme(for: appThemeRaw) }
-    private var accentColor: Color { themeExpansion?.resolvedAccentColor(from: customAccentColorHex) ?? .blue }
     
     var body: some View {
         NavigationStack {
-            ZStack {
-                ThemedBackground(style: backgroundStyle)
-                    .ignoresSafeArea()
-                ScrollView {
-                    VStack(spacing: 20) {
-                        infoCard
+            List {
+                if working && entries.isEmpty {
+                    Section {
+                        HStack {
+                            Spacer()
+                            ProgressView("Loading...")
+                            Spacer()
+                        }
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 30)
-                }
-                if alert {
-                    CustomErrorView(title: alertTitle,
-                                    message: alertMsg,
-                                    onDismiss: { alert = false },
-                                    messageType: alertSuccess ? .success : .error)
+                } else if entries.isEmpty && notMatchedProfiles.isEmpty {
+                    Section {
+                        Text("No profiles found.")
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 
-                if confirmRemove {
-                    CustomErrorView(
-                        title: "Confirm Removal",
-                        message: "Remove profile for \(removeTargetName) (UUID: \(removeTargetUUID))?\n**Apps associated with this profile may become unavailable.**",
-                        onDismiss: { confirmRemove = false },
-                        showButton: true,
-                        primaryButtonText: "Remove",
-                        secondaryButtonText: "Cancel",
-                        onPrimaryButtonTap: {
-                            Task { await removeProfile(uuid: removeTargetUUID) }
-                        },
-                        onSecondaryButtonTap: {
-                            // Just dismiss
-                        },
-                        showSecondaryButton: true,
-                        messageType: .info
-                    )
+                ForEach(entries) { entry in
+                    Section {
+                        // Header/Status Row
+                        VStack(alignment: .leading, spacing: 4) {
+                            if let match = entry.bestMatchingProfile {
+                                HStack {
+                                    Image(systemName: "clock")
+                                    Text("Expires: \(match.profile.formattedDate)")
+                                }
+                                .foregroundStyle(match.profile.dateColor)
+                                .font(.subheadline)
+                            } else {
+                                HStack {
+                                    Image(systemName: "exclamationmark.triangle")
+                                    Text("No matching profile")
+                                }
+                                .font(.subheadline)
+                                .foregroundColor(.refreshRed)
+                            }
+                            
+                            Text(entry.id)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                        
+                        // Profiles
+                        if let recent = entry.mostRecentProfile {
+                            profileRow(match: recent, isMostRecent: true)
+                        }
+                        
+                        if let best = entry.bestMatchingProfile, best.profile.uuid != entry.mostRecentProfile?.profile.uuid {
+                            profileRow(match: best, isMostRecent: false)
+                        }
+                        
+                        if entry.profileMatches.count > 1 {
+                            let showMore = expandedApps.contains(entry.id)
+                            let extraProfiles = entry.profileMatches.dropFirst(recentAndBestCount(for: entry))
+                            
+                            if !extraProfiles.isEmpty {
+                                if showMore {
+                                    ForEach(extraProfiles, id: \.profile.uuid) { match in
+                                        profileRow(match: match, isMostRecent: false)
+                                    }
+                                }
+                                
+                                Button {
+                                    withAnimation {
+                                        if showMore { expandedApps.remove(entry.id) }
+                                        else { expandedApps.insert(entry.id) }
+                                    }
+                                } label: {
+                                    Label(showMore ? "Hide older profiles" : "Show \(extraProfiles.count) older profiles",
+                                          systemImage: showMore ? "chevron.up" : "chevron.down")
+                                        .font(.caption)
+                                        .foregroundStyle(.blue)
+                                }
+                            }
+                        }
+                    } header: {
+                        Text(entry.name)
+                    }
                 }
                 
+                if !notMatchedProfiles.isEmpty {
+                    Section("Other Profiles") {
+                        ForEach(notMatchedProfiles) { entry in
+                            VStack(alignment: .leading) {
+                                Text(entry.id)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.primary)
+                            }
+                            
+                            ForEach(entry.profileMatches, id: \.profile.uuid) { match in
+                                profileRow(match: match, isMostRecent: false)
+                            }
+                        }
+                    }
+                }
             }
+            .listStyle(.insetGrouped)
             .navigationTitle("App Expiry")
             .toolbar {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
@@ -195,7 +249,6 @@ struct ProfileView: View {
                     
                 }
             }
-            
             .onAppear { Task { await loadData() } }
             .fileImporter(
                 isPresented: $isImporterPresented,
@@ -218,130 +271,18 @@ struct ProfileView: View {
                 }
             }
         }
-        .preferredColorScheme(preferredScheme)
-    }
-    
-    // MARK: - UI Sections
-    
-    private var infoCard: some View {
-        VStack {
-            HStack {
-                Text("Sideloaded Apps")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-            
-            LazyVStack(alignment: .leading, spacing: 14) {
-                if entries.isEmpty {
-                    Text(working ? "Loading Apps" : "No sideloaded apps found")
-                } else {
-                    ForEach(entries) { entry in
-                        appRow(for: entry)
-                        if entry.id != entries.last?.id {
-                            Divider()
-                                .background(Color.white.opacity(0.12))
-                                .padding(.vertical, 4)
-                        }
-                    }
-                }
-                
-                
-            }
-            .padding(20)
-            .background(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 20, style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
-                    )
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .shadow(color: .black.opacity(0.15), radius: 12, x: 0, y: 4)
-            
-            if !notMatchedProfiles.isEmpty {
-                HStack {
-                    Text("Other Profiles")
-                        .padding(.top, 10.0)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    ForEach(notMatchedProfiles) { entry in
-                        appRow(for: entry)
-                        if entry.id != notMatchedProfiles.last?.id {
-                            Divider()
-                                .background(Color.white.opacity(0.12))
-                                .padding(.vertical, 4)
-                        }
-                    }
-                }
-                .padding(20)
-                .background(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .fill(.ultraThinMaterial)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                                .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
-                        )
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .shadow(color: .black.opacity(0.15), radius: 12, x: 0, y: 4)
-            }
+                .alert(alertTitle, isPresented: $alert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(alertMsg)
         }
-    }
-    
-    private func appRow(for entry: AppProfileStatus) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(entry.name)
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                Spacer()
-                if let match = entry.bestMatchingProfile {
-                    Text("Expires: \(match.profile.formattedDate)")
-                        .foregroundStyle(match.profile.dateColor)
-                        .font(.caption)
-                } else {
-                    Text("No matching profile")
-                        .font(.caption)
-                        .foregroundColor(.refreshRed)
-                }
+        .alert("Confirm Removal", isPresented: $confirmRemove) {
+            Button("Remove", role: .destructive) {
+                Task { await removeProfile(uuid: removeTargetUUID) }
             }
-            Text(entry.id)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-            if let recent = entry.mostRecentProfile {
-                profileRow(match: recent, isMostRecent: true)
-            }
-            if let best = entry.bestMatchingProfile, best.profile.uuid != entry.mostRecentProfile?.profile.uuid {
-                profileRow(match: best, isMostRecent: false)
-            }
-            if entry.profileMatches.count > 1 {
-                if expandedApps.contains(entry.id) {
-                    ForEach(entry.profileMatches.dropFirst(recentAndBestCount(for: entry)), id: \.profile.uuid) { match in
-                        profileRow(match: match, isMostRecent: false)
-                    }
-                }
-                Button {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        if expandedApps.contains(entry.id) {
-                            expandedApps.remove(entry.id)
-                        } else {
-                            expandedApps.insert(entry.id)
-                        }
-                    }
-                } label: {
-                    Label(expandedApps.contains(entry.id) ? "Hide older profiles" : "Show older profiles",
-                          systemImage: expandedApps.contains(entry.id) ? "chevron.up" : "chevron.down")
-                        .font(.caption)
-                        .labelStyle(.titleAndIcon)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Remove profile for \(removeTargetName) (UUID: \(removeTargetUUID))?\nApps associated with this profile may become unavailable.")
         }
     }
     
@@ -387,8 +328,8 @@ struct ProfileView: View {
                         .textSelection(.enabled)
                 }
                 Spacer()
-                HStack {
-                    profileActionButton(icon: "square.and.arrow.down", color: accentColor) {
+                HStack(spacing: 16) {
+                    profileActionButton(icon: "square.and.arrow.down", color: .blue) {
                         saveProfile(profile: match.profile)
                     }
                     profileActionButton(icon: "trash", color: .refreshRed) {
@@ -409,19 +350,7 @@ struct ProfileView: View {
                 }
             }
         }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.white.opacity(0.05))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(match.missingEntitlements.isEmpty ? Color.white.opacity(0.1) : Color.refreshRed.opacity(0.6), lineWidth: 1)
-                )
-        )
-        .background(
-            match.missingEntitlements.isEmpty ? Color.clear : Color.refreshRed.opacity(0.08)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(.vertical, 4)
     }
     
     // MARK: - Data loading
@@ -443,7 +372,21 @@ struct ProfileView: View {
                 }
                 return (parsedProfiles, parsedApps)
             }.value
-            let groupedProfiles = Dictionary(grouping: profiles) { profileIdentifier(from: $0) }
+
+            let failedProfiles = profiles.filter { $0.decodeError != nil }
+            let validProfiles = profiles.filter { $0.decodeError == nil }
+
+            if !failedProfiles.isEmpty {
+                let errors = failedProfiles.map { $0.decodeError ?? "Unknown error" }
+                let uniqueErrors = Array(Set(errors))
+                await MainActor.run {
+                    alertTitle = "Failed to Decode \(failedProfiles.count) Profile\(failedProfiles.count == 1 ? "" : "s")"
+                    alertMsg = uniqueErrors.joined(separator: "\n")
+                    alert = true
+                }
+            }
+
+            let groupedProfiles = Dictionary(grouping: validProfiles) { profileIdentifier(from: $0) }
                 .mapValues { profiles in
                     profiles.sorted { lhs, rhs in
                         let leftDate = lhs.expirationDate ?? .distantPast
