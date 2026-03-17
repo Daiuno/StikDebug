@@ -224,9 +224,8 @@ struct ScriptListView: View {
         let bundledScripts: [(resource: String, filename: String)] = [
             ("attachDetach", "attachDetach.js"),
             ("maciOS", "maciOS.js"),
-            ("Amethyst-MeloNX", "Amethyst-MeloNX.js"),
+            ("universal", "universal.js"),
             ("Geode", "Geode.js"),
-            ("manic", "manic.js"),
             ("UTM-Dolphin", "UTM-Dolphin.js")
         ]
         for entry in bundledScripts {
